@@ -1,17 +1,16 @@
 const fs = require('fs')
 const path = require('path')
-const babylon = require('babylon')
-const traverse = require('babel-traverse')
-const { transformFromAst } = require('babel-core')
+const parser = require('@babel/parser')
+const traverse = require('@babel/traverse').default
+const { transformFromAst } = require('@babel/core')
 
 let ID = 0
 
 function createAsset (filename) {
   // 读取文件
   const content = fs.readFileSync(filename, 'utf-8')
-  console.log(content)
   // 我们通过 babylon 这个 javascript 解析器来理解 import 进来的字符串 
-  const ast = babylon.parse(content, {
+  const ast = parser.parse(content, {
     sourceType: 'module'
   })
   // 该模块所依赖的模块的相对路径
@@ -26,7 +25,7 @@ function createAsset (filename) {
   const id = ID++
   // AST -> ES5
   const { code } = transformFromAst(ast, null, {
-    presets: ['env'],
+    presets: ['@babel/env'],
   })
 
   return {
@@ -36,8 +35,6 @@ function createAsset (filename) {
     code
   }
 }
-
-console.log('createAsset', createAsset('./src/index.js'))
 
 function createGraph (entry) {
   // 从第一个文件开始,首先解析index文件 
@@ -52,16 +49,51 @@ function createGraph (entry) {
 
     // 遍历依赖数组，解析每一个依赖模块
     asset.dependencies.forEach(relativePath => {
-      const absolutePath = path.join(dirname, relativePath)
+      const absolutePath = path.join(dirname, relativePath) + '.js'
       // 解析
       const child = createAsset(absolutePath)
-
       // 子模块`路径-id`map
       asset.mapping[relativePath] = child.id
+      queue.push(child)
     })
   }
+  return queue
 }
 
-// const graph = createGraph('./src/index.js')
-console.log('graph:', graph)
-// const result = bundle(graph)
+function bundle (graph) {
+  let modules = ''
+  graph.forEach(mod => {
+    modules += `${mod.id}: [
+      function (require, module, exports) {
+        ${mod.code}
+      },
+      ${JSON.stringify(mod.mapping)}
+    ],`
+  })
+  const result = `
+(function (modules) {
+  function require(id) {
+    const [fn, mapping] = modules[id]
+    function localRequire (name) {
+      return require(mapping[name])
+    }
+
+    const module = { exports: {} }
+
+    fn(localRequire, module, module.exports)
+
+    return module.exports
+  }
+
+  require(0)
+})({
+  ${modules}
+})
+  `
+  return result
+}
+
+const graph = createGraph('src\\index.js')
+const result = bundle(graph)
+
+console.log(result)
